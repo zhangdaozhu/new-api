@@ -61,6 +61,7 @@ import ModelSelectModal from './ModelSelectModal';
 import SingleModelSelectModal from './SingleModelSelectModal';
 import OllamaModelModal from './OllamaModelModal';
 import CodexOAuthModal from './CodexOAuthModal';
+import CopilotOAuthModal from './CopilotOAuthModal';
 import ParamOverrideEditorModal from './ParamOverrideEditorModal';
 import JSONEditor from '../../../common/ui/JSONEditor';
 import SecureVerificationModal from '../../../common/modals/SecureVerificationModal';
@@ -155,6 +156,8 @@ function type2secretPrompt(type) {
       return '按照如下格式输入: AccessKey|SecretAccessKey';
     case 57:
       return '请输入 JSON 格式的 OAuth 凭据（必须包含 access_token 和 account_id）';
+    case 58:
+      return '请输入 GitHub Token（通过 gh auth token 获取，或使用 PAT）';
     default:
       return '请输入渠道对应的鉴权密钥';
   }
@@ -363,6 +366,7 @@ const EditChannelModal = (props) => {
   const [isIonetChannel, setIsIonetChannel] = useState(false);
   const [ionetMetadata, setIonetMetadata] = useState(null);
   const [codexOAuthModalVisible, setCodexOAuthModalVisible] = useState(false);
+  const [copilotOAuthModalVisible, setCopilotOAuthModalVisible] = useState(false);
   const [codexCredentialRefreshing, setCodexCredentialRefreshing] =
     useState(false);
   const [paramOverrideEditorVisible, setParamOverrideEditorVisible] =
@@ -1208,6 +1212,15 @@ const EditChannelModal = (props) => {
   const handleCodexOAuthGenerated = (key) => {
     handleInputChange('key', key);
     formatJsonField('key');
+  };
+
+  const handleCopilotOAuthGenerated = (token, userName) => {
+    if (token) {
+      // For new channel, append token to key field
+      const currentKey = inputs.key || '';
+      const newKey = currentKey ? currentKey + '\n' + token : token;
+      handleInputChange('key', newKey);
+    }
   };
 
   const handleRefreshCodexCredential = async () => {
@@ -2786,7 +2799,82 @@ const EditChannelModal = (props) => {
                       )
                     ) : (
                       <>
-                        {inputs.type === 57 ? (
+                        {inputs.type === 58 ? (
+                          <>
+                            <Form.TextArea
+                              field='key'
+                              label={
+                                isEdit
+                                  ? t('密钥（编辑模式下，保存的密钥不会显示）')
+                                  : t('密钥')
+                              }
+                              placeholder={t(
+                                '请输入 GitHub Token（多个账户换行分隔）\n通过下方「GitHub 授权」按钮自动获取，或手动输入 Fine-grained PAT',
+                              )}
+                              rules={
+                                isEdit
+                                  ? []
+                                  : [
+                                      {
+                                        required: true,
+                                        message: t('请输入密钥'),
+                                      },
+                                    ]
+                              }
+                              autoComplete='new-password'
+                              onChange={(value) =>
+                                handleInputChange('key', value)
+                              }
+                              disabled={isIonetLocked}
+                              extraText={
+                                <div className='flex flex-col gap-2'>
+                                  <Text type='tertiary' size='small'>
+                                    {t(
+                                      '支持多个 GitHub 账户，每行一个 Token，系统会自动轮询使用',
+                                    )}
+                                  </Text>
+
+                                  <Space wrap spacing='tight'>
+                                    <Button
+                                      size='small'
+                                      type='primary'
+                                      theme='outline'
+                                      onClick={() =>
+                                        setCopilotOAuthModalVisible(true)
+                                      }
+                                      disabled={isIonetLocked}
+                                    >
+                                      {t('GitHub 授权')}
+                                    </Button>
+                                    {isEdit && (
+                                      <Button
+                                        size='small'
+                                        type='primary'
+                                        theme='outline'
+                                        onClick={handleShow2FAModal}
+                                        disabled={isIonetLocked}
+                                      >
+                                        {t('查看密钥')}
+                                      </Button>
+                                    )}
+                                    {batchExtra}
+                                  </Space>
+                                </div>
+                              }
+                              autosize
+                              showClear
+                            />
+
+                            <CopilotOAuthModal
+                              visible={copilotOAuthModalVisible}
+                              onCancel={() =>
+                                setCopilotOAuthModalVisible(false)
+                              }
+                              onSuccess={handleCopilotOAuthGenerated}
+                              channelId={isEdit ? channelId : null}
+                            />
+                          </>
+                        ) : inputs.type === 57 ? (
                           <>
                             <Form.TextArea
                               field='key'

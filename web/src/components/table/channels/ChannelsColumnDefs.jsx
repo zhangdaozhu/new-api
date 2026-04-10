@@ -528,22 +528,53 @@ export const getChannelsColumns = ({
       dataIndex: 'expired_time',
       render: (text, record, index) => {
         if (record.children === undefined) {
+          // Parse copilot quota from other field
+          let copilotUsed = 0;
+          let copilotTotal = 0;
+          if (record.type === 58 && record.other) {
+            try {
+              const info = JSON.parse(record.other);
+              copilotUsed = Math.floor(info.copilot_used || 0);
+              copilotTotal = Math.floor(info.copilot_total || 0);
+            } catch (e) {}
+          }
           return (
             <div>
               <Space spacing={1}>
+                {record.type === 58 ? (
+                  <>
+                  <Tooltip content={t('已用额度')}>
+                    <Tag color='white' type='ghost' shape='circle'>
+                      {renderQuota(record.used_quota)}
+                    </Tag>
+                  </Tooltip>
+                  <Tooltip content={t('已用请求次数')}>
+                    <Tag color='white' type='ghost' shape='circle'>
+                      {copilotUsed + ' ' + t('次')}
+                    </Tag>
+                  </Tooltip>
+                  </>
+                ) : (
                 <Tooltip content={t('已用额度')}>
                   <Tag color='white' type='ghost' shape='circle'>
                     {renderQuota(record.used_quota)}
                   </Tag>
                 </Tooltip>
+                )}
                 <Tooltip
                   content={
                     record.type === 57
                       ? t('查看 Codex 帐号信息与用量')
-                      : t('剩余额度') +
-                        ': ' +
-                        renderQuotaWithAmount(record.balance) +
-                        t('，点击更新')
+                      : record.type === 58
+                        ? t('剩余请求次数') +
+                          ': ' +
+                          Math.floor(record.balance) +
+                          ' / ' + t('总计') + ' ' + copilotTotal +
+                          t('，点击更新')
+                        : t('剩余额度') +
+                          ': ' +
+                          renderQuotaWithAmount(record.balance) +
+                          t('，点击更新')
                   }
                 >
                   <Tag
@@ -555,7 +586,9 @@ export const getChannelsColumns = ({
                   >
                     {record.type === 57
                       ? t('帐号信息')
-                      : renderQuotaWithAmount(record.balance)}
+                      : record.type === 58
+                        ? Math.floor(record.balance) + ' ' + t('次')
+                        : renderQuotaWithAmount(record.balance)}
                   </Tag>
                 </Tooltip>
               </Space>

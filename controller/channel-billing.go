@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	copilotRelay "github.com/QuantumNous/new-api/relay/channel/copilot"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -386,6 +388,8 @@ func updateChannelBalance(channel *model.Channel) (float64, error) {
 		return updateChannelOpenRouterBalance(channel)
 	case constant.ChannelTypeMoonshot:
 		return updateChannelMoonshotBalance(channel)
+	case constant.ChannelTypeCopilot:
+		return updateChannelCopilotBalance(channel)
 	default:
 		return 0, errors.New("尚未实现")
 	}
@@ -502,4 +506,31 @@ func AutomaticallyUpdateChannels(frequency int) {
 		_ = updateAllChannelsBalance()
 		common.SysLog("channels update done")
 	}
+}
+
+func updateChannelCopilotBalance(channel *model.Channel) (float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	quota, err := copilotRelay.GetAggregatedQuota(ctx, channel.Key)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get copilot quota: %w", err)
+	}
+
+	// Store quota details in other field for frontend display
+	quotaJSON, _ := common.Marshal(map[string]any{
+		"copilot_used":  quota.UsedRequests,
+		"copilot_total": quota.TotalRequests,
+		"reset_date":    quota.ResetDate,
+	})
+	err = model.DB.Model(channel).Select("balance_updated_time", "balance", "other").Updates(model.Channel{
+		BalanceUpdatedTime: common.GetTimestamp(),
+		Balance:            quota.RemainingRequests,
+		Other:              string(quotaJSON),
+	}).Error
+	if err != nil {
+		return 0, fmt.Errorf("failed to update copilot balance: %w", err)
+	}
+
+	return quota.RemainingRequests, nil
 }
