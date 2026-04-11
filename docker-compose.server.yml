@@ -34,7 +34,6 @@ services:
     env_file:
       - .env.server
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-mysql}
       MYSQL_DATABASE: new-api
     command:
       - --character-set-server=utf8mb4
