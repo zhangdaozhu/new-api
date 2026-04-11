@@ -63,22 +63,6 @@ if grep -q "change-me-session" "$ENV_FILE"; then
   rm -f "${ENV_FILE}.bak"
 fi
 
-echo "Building frontend assets on host..."
-if command -v bun >/dev/null 2>&1; then
-  (
-    cd web
-    bun install
-    DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION="$(cat ../VERSION)" bun run build
-  )
-else
-  echo "bun not found, building frontend with oven/bun container..."
-  docker run --rm \
-    -v "$APP_DIR:/work" \
-    -w /work/web \
-    oven/bun:1 \
-    sh -c "bun install && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=\$(cat ../VERSION) bun run build"
-fi
-
 docker compose -f "$COMPOSE_FILE" build --pull new-api
 docker compose -f "$COMPOSE_FILE" up -d
 docker compose -f "$COMPOSE_FILE" ps
