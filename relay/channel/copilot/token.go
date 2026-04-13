@@ -3,95 +3,164 @@ package copilot
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	copilot "github.com/github/copilot-sdk/go"
-	"github.com/github/copilot-sdk/go/rpc"
 )
 
-// QuotaInfo holds aggregated quota information for a Copilot account.
-type QuotaInfo struct {
-	// Total entitled requests across all quota types
-	TotalRequests float64 `json:"total_requests"`
-	// Requests already used
-	UsedRequests float64 `json:"used_requests"`
-	// Remaining requests
-	RemainingRequests float64 `json:"remaining_requests"`
-	// Remaining percentage (0.0 to 1.0)
-	RemainingPercentage float64 `json:"remaining_percentage"`
-	// Reset date (ISO 8601), from the first quota snapshot that has one
-	ResetDate string `json:"reset_date,omitempty"`
-	// Whether the account has unlimited entitlement
-	IsUnlimited bool `json:"is_unlimited"`
-	// Per-quota-type snapshots
-	Snapshots map[string]rpc.QuotaSnapshot `json:"snapshots,omitempty"`
+const (
+	CopilotAPIEndpoint = "https://api.githubcopilot.com"
+	copilotTokenURL    = "https://api.github.com/copilot_internal/v2/token"
+)
+
+// copilotTokenResponse is the response from the Copilot token exchange endpoint.
+type copilotTokenResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at"`
 }
 
-// clientEntry holds a long-lived Copilot SDK Client for a GitHub token.
-type clientEntry struct {
-	client *copilot.Client
-	mu     sync.Mutex
+// tokenEntry caches a Copilot JWT for a GitHub OAuth token.
+type tokenEntry struct {
+	jwt       string
+	expiresAt time.Time
 }
 
 var (
-	clientPool = make(map[string]*clientEntry)
-	poolMu     sync.RWMutex
+	tokenCache = make(map[string]*tokenEntry)
+	tokenMu    sync.RWMutex
 )
 
-// getClient returns a started Copilot SDK Client for the given GitHub token.
-// Clients are cached and reused across requests.
-func getClient(ctx context.Context, githubToken string) (*copilot.Client, error) {
-	poolMu.RLock()
-	entry, ok := clientPool[githubToken]
-	poolMu.RUnlock()
-
-	if ok {
-		return entry.client, nil
+// GetCopilotToken exchanges a GitHub OAuth token for a Copilot API JWT.
+// Results are cached and auto-refreshed.
+func GetCopilotToken(githubToken string) (string, error) {
+	tokenMu.RLock()
+	if entry, ok := tokenCache[githubToken]; ok {
+		if time.Now().Before(entry.expiresAt.Add(-60 * time.Second)) {
+			tokenMu.RUnlock()
+			return entry.jwt, nil
+		}
 	}
+	tokenMu.RUnlock()
 
-	poolMu.Lock()
-	defer poolMu.Unlock()
-
-	// Double-check after acquiring write lock
-	if entry, ok := clientPool[githubToken]; ok {
-		return entry.client, nil
-	}
-
-	client := copilot.NewClient(&copilot.ClientOptions{
-		GitHubToken: githubToken,
-	})
-
-	if err := client.Start(ctx); err != nil {
-		return nil, fmt.Errorf("failed to start copilot client: %w", err)
-	}
-
-	clientPool[githubToken] = &clientEntry{client: client}
-	return client, nil
+	return refreshCopilotToken(githubToken)
 }
 
+func refreshCopilotToken(githubToken string) (string, error) {
+	tokenMu.Lock()
+	defer tokenMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if entry, ok := tokenCache[githubToken]; ok {
+		if time.Now().Before(entry.expiresAt.Add(-60 * time.Second)) {
+			return entry.jwt, nil
+		}
+	}
+
+	req, err := http.NewRequest(http.MethodGet, copilotTokenURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("copilot token exchange: %w", err)
+	}
+	req.Header.Set("Authorization", "token "+githubToken)
+	req.Header.Set("User-Agent", "new-api/1.0")
+	req.Header.Set("Editor-Version", "vscode/1.99.0")
+	req.Header.Set("Editor-Plugin-Version", "copilot/1.0.0")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("copilot token exchange request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("copilot token exchange failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result copilotTokenResponse
+	if err := common.DecodeJson(resp.Body, &result); err != nil {
+		return "", fmt.Errorf("failed to decode copilot token response: %w", err)
+	}
+
+	if result.Token == "" {
+		return "", fmt.Errorf("empty copilot token - check Copilot subscription")
+	}
+
+	tokenCache[githubToken] = &tokenEntry{
+		jwt:       result.Token,
+		expiresAt: time.Unix(result.ExpiresAt, 0),
+	}
+
+	return result.Token, nil
+}
+
+// QuotaInfo holds aggregated quota information for a Copilot account.
+type QuotaInfo struct {
+	TotalRequests       float64 `json:"total_requests"`
+	UsedRequests        float64 `json:"used_requests"`
+	RemainingRequests   float64 `json:"remaining_requests"`
+	RemainingPercentage float64 `json:"remaining_percentage"`
+	ResetDate           string  `json:"reset_date,omitempty"`
+	IsUnlimited         bool    `json:"is_unlimited"`
+}
+
+// copilotUserResponse represents the /copilot_internal/user API response.
+type copilotUserResponse struct {
+	ChatEnabled    bool            `json:"chat_enabled"`
+	CopilotPlan    string          `json:"copilot_plan"`
+	QuotaSnapshots []quotaSnapshot `json:"quota_snapshots"`
+}
+
+type quotaSnapshot struct {
+	EntitlementRequests float64 `json:"entitlement_requests"`
+	UsedRequests        float64 `json:"used_requests"`
+	ResetDate           *string `json:"reset_date"`
+	Unlimited           bool    `json:"unlimited"`
+}
+
+const copilotUserURL = "https://api.github.com/copilot_internal/user"
+
 // GetQuota returns the quota/usage information for a single GitHub token.
-func GetQuota(ctx context.Context, githubToken string) (*QuotaInfo, error) {
-	client, err := getClient(ctx, githubToken)
+func GetQuota(_ context.Context, githubToken string) (*QuotaInfo, error) {
+	req, err := http.NewRequest(http.MethodGet, copilotUserURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Authorization", "token "+githubToken)
+	req.Header.Set("User-Agent", "new-api/1.0")
+	req.Header.Set("Editor-Version", "vscode/1.99.0")
+	req.Header.Set("Editor-Plugin-Version", "copilot/1.0.0")
 
-	result, err := client.RPC.Account.GetQuota(ctx)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get copilot quota: %w", err)
+		return nil, fmt.Errorf("failed to get copilot user info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("copilot user API failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	info := &QuotaInfo{
-		Snapshots: result.QuotaSnapshots,
+	var userResp copilotUserResponse
+	if err := common.DecodeJson(resp.Body, &userResp); err != nil {
+		return nil, fmt.Errorf("failed to decode copilot user response: %w", err)
 	}
 
-	for _, snap := range result.QuotaSnapshots {
+	info := &QuotaInfo{}
+	for _, snap := range userResp.QuotaSnapshots {
 		info.TotalRequests += snap.EntitlementRequests
 		info.UsedRequests += snap.UsedRequests
 		if snap.ResetDate != nil && info.ResetDate == "" {
 			info.ResetDate = *snap.ResetDate
+		}
+		if snap.Unlimited {
+			info.IsUnlimited = true
 		}
 	}
 	info.RemainingRequests = info.TotalRequests - info.UsedRequests
@@ -104,7 +173,13 @@ func GetQuota(ctx context.Context, githubToken string) (*QuotaInfo, error) {
 
 // GetAggregatedQuota returns aggregated quota across multiple GitHub tokens (newline-separated).
 func GetAggregatedQuota(ctx context.Context, keys string) (*QuotaInfo, error) {
-	tokens := splitKeys(keys)
+	var tokens []string
+	for _, line := range strings.Split(keys, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			tokens = append(tokens, line)
+		}
+	}
 	if len(tokens) == 0 {
 		return nil, fmt.Errorf("no valid tokens provided")
 	}
@@ -137,15 +212,4 @@ func GetAggregatedQuota(ctx context.Context, keys string) (*QuotaInfo, error) {
 		return nil, fmt.Errorf("all tokens failed, last error: %w", lastErr)
 	}
 	return aggregated, nil
-}
-
-func splitKeys(keys string) []string {
-	var result []string
-	for _, line := range strings.Split(keys, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			result = append(result, line)
-		}
-	}
-	return result
 }
