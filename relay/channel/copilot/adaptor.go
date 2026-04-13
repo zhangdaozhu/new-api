@@ -141,8 +141,13 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 func (a *Adaptor) handleStream(c *gin.Context, session *copilot.Session, ctx context.Context, prompt string, info *relaycommon.RelayInfo) (any, *types.NewAPIError) {
 	helper.SetEventStreamHeaders(c)
 
+	isClaudeFormat := info.RelayFormat == types.RelayFormatClaude
+
 	var usage dto.Usage
 	responseID := fmt.Sprintf("chatcmpl-copilot-%d", time.Now().UnixNano())
+	if isClaudeFormat {
+		responseID = fmt.Sprintf("msg_copilot_%d", time.Now().UnixNano())
+	}
 	created := time.Now().Unix()
 	model := info.UpstreamModelName
 
@@ -150,6 +155,38 @@ func (a *Adaptor) handleStream(c *gin.Context, session *copilot.Session, ctx con
 	errCh := make(chan error, 1)
 	var mu sync.Mutex
 	var finished bool
+	contentBlockStarted := false
+
+	// Helper to send a Claude SSE event
+	sendClaudeEvent := func(eventType string, data any) {
+		jsonData, marshalErr := common.Marshal(data)
+		if marshalErr != nil {
+			return
+		}
+		c.Render(-1, common.CustomEvent{Data: "event: " + eventType})
+		c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
+		c.Writer.Flush()
+	}
+
+	if isClaudeFormat {
+		// Send message_start event
+		sendClaudeEvent("message_start", map[string]any{
+			"type": "message_start",
+			"message": map[string]any{
+				"id":            responseID,
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []any{},
+				"model":         model,
+				"stop_reason":   nil,
+				"stop_sequence": nil,
+				"usage": map[string]any{
+					"input_tokens":  0,
+					"output_tokens": 0,
+				},
+			},
+		})
+	}
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
 		mu.Lock()
@@ -161,27 +198,49 @@ func (a *Adaptor) handleStream(c *gin.Context, session *copilot.Session, ctx con
 		switch event.Type {
 		case copilot.SessionEventTypeAssistantMessageDelta:
 			if event.Data.DeltaContent != nil {
-				chunk := &dto.ChatCompletionsStreamResponse{
-					Id:      responseID,
-					Object:  "chat.completion.chunk",
-					Created: created,
-					Model:   model,
-					Choices: []dto.ChatCompletionsStreamResponseChoice{
-						{
-							Index: 0,
-							Delta: dto.ChatCompletionsStreamResponseChoiceDelta{
-								Content: event.Data.DeltaContent,
-								Role:    "assistant",
+				if isClaudeFormat {
+					if !contentBlockStarted {
+						contentBlockStarted = true
+						sendClaudeEvent("content_block_start", map[string]any{
+							"type":  "content_block_start",
+							"index": 0,
+							"content_block": map[string]any{
+								"type": "text",
+								"text": "",
+							},
+						})
+					}
+					sendClaudeEvent("content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": 0,
+						"delta": map[string]any{
+							"type": "text_delta",
+							"text": *event.Data.DeltaContent,
+						},
+					})
+				} else {
+					chunk := &dto.ChatCompletionsStreamResponse{
+						Id:      responseID,
+						Object:  "chat.completion.chunk",
+						Created: created,
+						Model:   model,
+						Choices: []dto.ChatCompletionsStreamResponseChoice{
+							{
+								Index: 0,
+								Delta: dto.ChatCompletionsStreamResponseChoiceDelta{
+									Content: event.Data.DeltaContent,
+									Role:    "assistant",
+								},
 							},
 						},
-					},
+					}
+					jsonData, marshalErr := common.Marshal(chunk)
+					if marshalErr != nil {
+						return
+					}
+					c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
+					c.Writer.Flush()
 				}
-				jsonData, marshalErr := common.Marshal(chunk)
-				if marshalErr != nil {
-					return
-				}
-				c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
-				c.Writer.Flush()
 			}
 		case copilot.SessionEventTypeAssistantUsage:
 			if event.Data.InputTokens != nil {
@@ -193,26 +252,47 @@ func (a *Adaptor) handleStream(c *gin.Context, session *copilot.Session, ctx con
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		case copilot.SessionEventTypeSessionIdle:
 			finished = true
-			// Send final chunk with finish_reason
-			finishReason := "stop"
-			finalChunk := &dto.ChatCompletionsStreamResponse{
-				Id:      responseID,
-				Object:  "chat.completion.chunk",
-				Created: created,
-				Model:   model,
-				Choices: []dto.ChatCompletionsStreamResponseChoice{
-					{
-						Index:        0,
-						Delta:        dto.ChatCompletionsStreamResponseChoiceDelta{},
-						FinishReason: &finishReason,
+			if isClaudeFormat {
+				if contentBlockStarted {
+					sendClaudeEvent("content_block_stop", map[string]any{
+						"type":  "content_block_stop",
+						"index": 0,
+					})
+				}
+				sendClaudeEvent("message_delta", map[string]any{
+					"type": "message_delta",
+					"delta": map[string]any{
+						"stop_reason":   "end_turn",
+						"stop_sequence": nil,
 					},
-				},
-				Usage: &usage,
+					"usage": map[string]any{
+						"output_tokens": usage.CompletionTokens,
+					},
+				})
+				sendClaudeEvent("message_stop", map[string]any{
+					"type": "message_stop",
+				})
+			} else {
+				finishReason := "stop"
+				finalChunk := &dto.ChatCompletionsStreamResponse{
+					Id:      responseID,
+					Object:  "chat.completion.chunk",
+					Created: created,
+					Model:   model,
+					Choices: []dto.ChatCompletionsStreamResponseChoice{
+						{
+							Index:        0,
+							Delta:        dto.ChatCompletionsStreamResponseChoiceDelta{},
+							FinishReason: &finishReason,
+						},
+					},
+					Usage: &usage,
+				}
+				jsonData, _ := common.Marshal(finalChunk)
+				c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
+				c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
+				c.Writer.Flush()
 			}
-			jsonData, _ := common.Marshal(finalChunk)
-			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonData)})
-			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
-			c.Writer.Flush()
 			doneCh <- struct{}{}
 		case copilot.SessionEventTypeSessionError:
 			finished = true
@@ -244,6 +324,8 @@ func (a *Adaptor) handleStream(c *gin.Context, session *copilot.Session, ctx con
 }
 
 func (a *Adaptor) handleNonStream(c *gin.Context, session *copilot.Session, ctx context.Context, prompt string, info *relaycommon.RelayInfo) (any, *types.NewAPIError) {
+	isClaudeFormat := info.RelayFormat == types.RelayFormatClaude
+
 	var usage dto.Usage
 
 	// Collect usage from events
@@ -275,25 +357,49 @@ func (a *Adaptor) handleNonStream(c *gin.Context, session *copilot.Session, ctx 
 		content = *result.Data.Content
 	}
 
-	response := dto.OpenAITextResponse{
-		Id:      fmt.Sprintf("chatcmpl-copilot-%d", time.Now().UnixNano()),
-		Model:   info.UpstreamModelName,
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Choices: []dto.OpenAITextResponseChoice{
-			{
-				Index: 0,
-				Message: dto.Message{
-					Role:    "assistant",
-					Content: content,
+	var jsonResponse []byte
+	var marshalErr error
+
+	if isClaudeFormat {
+		response := dto.ClaudeResponse{
+			Id:   fmt.Sprintf("msg_copilot_%d", time.Now().UnixNano()),
+			Type: "message",
+			Role: "assistant",
+			Content: []dto.ClaudeMediaMessage{
+				{
+					Type: "text",
 				},
-				FinishReason: "stop",
 			},
-		},
-		Usage: usage,
+			StopReason: "end_turn",
+			Model:      info.UpstreamModelName,
+			Usage: &dto.ClaudeUsage{
+				InputTokens:  usage.PromptTokens,
+				OutputTokens: usage.CompletionTokens,
+			},
+		}
+		response.Content[0].SetText(content)
+		jsonResponse, marshalErr = common.Marshal(response)
+	} else {
+		response := dto.OpenAITextResponse{
+			Id:      fmt.Sprintf("chatcmpl-copilot-%d", time.Now().UnixNano()),
+			Model:   info.UpstreamModelName,
+			Object:  "chat.completion",
+			Created: time.Now().Unix(),
+			Choices: []dto.OpenAITextResponseChoice{
+				{
+					Index: 0,
+					Message: dto.Message{
+						Role:    "assistant",
+						Content: content,
+					},
+					FinishReason: "stop",
+				},
+			},
+			Usage: usage,
+		}
+		jsonResponse, marshalErr = common.Marshal(response)
 	}
 
-	jsonResponse, marshalErr := common.Marshal(response)
 	if marshalErr != nil {
 		return nil, types.NewError(marshalErr, types.ErrorCodeBadResponseBody)
 	}
