@@ -37,6 +37,10 @@ var (
 // GetCopilotToken exchanges a GitHub OAuth token for a Copilot API JWT.
 // Results are cached and auto-refreshed.
 func GetCopilotToken(githubToken string) (string, error) {
+	githubToken = normalizeGitHubToken(githubToken)
+	if githubToken == "" {
+		return "", fmt.Errorf("empty github token")
+	}
 	tokenMu.RLock()
 	if entry, ok := tokenCache[githubToken]; ok {
 		if time.Now().Before(entry.expiresAt.Add(-60 * time.Second)) {
@@ -50,6 +54,10 @@ func GetCopilotToken(githubToken string) (string, error) {
 }
 
 func refreshCopilotToken(githubToken string) (string, error) {
+	githubToken = normalizeGitHubToken(githubToken)
+	if githubToken == "" {
+		return "", fmt.Errorf("empty github token")
+	}
 	tokenMu.Lock()
 	defer tokenMu.Unlock()
 
@@ -126,6 +134,10 @@ const copilotUserURL = "https://api.github.com/copilot_internal/user"
 
 // GetQuota returns the quota/usage information for a single GitHub token.
 func GetQuota(_ context.Context, githubToken string) (*QuotaInfo, error) {
+	githubToken = normalizeGitHubToken(githubToken)
+	if githubToken == "" {
+		return nil, fmt.Errorf("empty github token")
+	}
 	req, err := http.NewRequest(http.MethodGet, copilotUserURL, nil)
 	if err != nil {
 		return nil, err
@@ -212,4 +224,14 @@ func GetAggregatedQuota(ctx context.Context, keys string) (*QuotaInfo, error) {
 		return nil, fmt.Errorf("all tokens failed, last error: %w", lastErr)
 	}
 	return aggregated, nil
+}
+
+func normalizeGitHubToken(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
