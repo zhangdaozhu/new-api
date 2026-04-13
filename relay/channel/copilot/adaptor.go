@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	copilot "github.com/github/copilot-sdk/go"
@@ -44,8 +45,16 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	return request, nil
 }
 
-func (a *Adaptor) ConvertClaudeRequest(*gin.Context, *relaycommon.RelayInfo, *dto.ClaudeRequest) (any, error) {
-	return nil, errors.New("not implemented")
+func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
+	if request == nil {
+		return nil, errors.New("request is nil")
+	}
+	openaiRequest, err := service.ClaudeToOpenAIRequest(*request, info)
+	if err != nil {
+		return nil, err
+	}
+	a.request = openaiRequest
+	return openaiRequest, nil
 }
 
 func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
