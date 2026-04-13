@@ -408,10 +408,12 @@ func (a *Adaptor) handleNonStream(c *gin.Context, session *copilot.Session, ctx 
 	return &usage, nil
 }
 
-// messagesToPrompt converts OpenAI messages to a single prompt string for the SDK.
-// System messages are excluded here (handled separately via SessionConfig.SystemMessage).
+// messagesToPrompt converts OpenAI messages to a prompt string for the SDK.
+// System messages are excluded (handled via SessionConfig.SystemMessage).
+// If there are multiple non-system messages, earlier messages are formatted as
+// conversation history so the model has full context.
 func messagesToPrompt(messages []dto.Message) string {
-	var parts []string
+	var nonSystem []dto.Message
 	for _, msg := range messages {
 		if msg.Role == "system" {
 			continue
@@ -420,13 +422,34 @@ func messagesToPrompt(messages []dto.Message) string {
 		if content == "" {
 			continue
 		}
-		parts = append(parts, content)
+		nonSystem = append(nonSystem, msg)
 	}
-	if len(parts) == 0 {
+	if len(nonSystem) == 0 {
 		return ""
 	}
-	// Use only the last user message as the prompt for the SDK session
-	return parts[len(parts)-1]
+	// Single message: send directly
+	if len(nonSystem) == 1 {
+		return nonSystem[0].StringContent()
+	}
+	// Multiple messages: include conversation history for context
+	var sb strings.Builder
+	for i, msg := range nonSystem[:len(nonSystem)-1] {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		switch msg.Role {
+		case "user":
+			sb.WriteString("[User]: ")
+		case "assistant":
+			sb.WriteString("[Assistant]: ")
+		default:
+			sb.WriteString("[" + msg.Role + "]: ")
+		}
+		sb.WriteString(msg.StringContent())
+	}
+	sb.WriteString("\n\n[User]: ")
+	sb.WriteString(nonSystem[len(nonSystem)-1].StringContent())
+	return sb.String()
 }
 
 // extractSystemMessage extracts and concatenates all system messages.
