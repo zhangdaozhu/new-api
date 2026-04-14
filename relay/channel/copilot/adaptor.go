@@ -22,6 +22,8 @@ type Adaptor struct {
 	openai.Adaptor
 }
 
+const upstreamGitHubTokenHeader = "X-GitHub-Token"
+
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 	a.Adaptor.Init(info)
 }
@@ -35,7 +37,10 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *relaycommon.RelayInfo) error {
 	if useProxyMode(info) {
-		return a.Adaptor.SetupRequestHeader(c, header, info)
+		channel.SetupApiRequestHeader(info, c, header)
+		header.Del("Authorization")
+		header.Set(upstreamGitHubTokenHeader, info.ApiKey)
+		return nil
 	}
 
 	channel.SetupApiRequestHeader(info, c, header)
