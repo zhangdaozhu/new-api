@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -13,9 +14,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Adaptor proxies requests to GitHub Copilot's OpenAI-compatible Models API
-// (api.githubcopilot.com) via direct HTTP, delegating format handling to the
-// OpenAI adaptor. Auth: GitHub OAuth token → Copilot JWT exchange.
+// Adaptor supports two modes:
+//  1. Direct Copilot API mode: exchange GitHub OAuth token for a Copilot token.
+//  2. Proxy mode: forward requests to an external copilot-api compatible service
+//     via ChannelBaseUrl, letting that service handle Copilot auth and protocol details.
 type Adaptor struct {
 	openai.Adaptor
 }
@@ -25,10 +27,17 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if useProxyMode(info) {
+		return a.Adaptor.GetRequestURL(info)
+	}
 	return fmt.Sprintf("%s/chat/completions", CopilotAPIEndpoint), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *relaycommon.RelayInfo) error {
+	if useProxyMode(info) {
+		return a.Adaptor.SetupRequestHeader(c, header, info)
+	}
+
 	channel.SetupApiRequestHeader(info, c, header)
 
 	token, err := GetCopilotToken(info.ApiKey)
@@ -68,4 +77,15 @@ func (a *Adaptor) GetModelList() []string {
 
 func (a *Adaptor) GetChannelName() string {
 	return ChannelName
+}
+
+func useProxyMode(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	baseURL := strings.TrimSpace(info.ChannelBaseUrl)
+	if baseURL == "" {
+		return false
+	}
+	return !strings.Contains(baseURL, "githubcopilot.com")
 }
