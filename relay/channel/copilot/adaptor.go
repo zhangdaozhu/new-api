@@ -37,9 +37,11 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 	}
 
 	header.Set("Authorization", "Bearer "+token)
-	header.Set("Editor-Version", "vscode/1.99.0")
-	header.Set("Editor-Plugin-Version", "copilot/1.0.0")
-	header.Set("Copilot-Integration-Id", "vscode-chat")
+	header.Set("Accept", "application/json")
+	header.Set("User-Agent", copilotUserAgent)
+	header.Set("Editor-Version", editorVersion)
+	header.Set("Editor-Plugin-Version", editorPlugin)
+	header.Set("Copilot-Integration-Id", integrationID)
 	header.Set("Openai-Intent", "conversation-panel")
 	return nil
 }

@@ -15,6 +15,10 @@ import (
 const (
 	CopilotAPIEndpoint = "https://api.githubcopilot.com"
 	copilotTokenURL    = "https://api.github.com/copilot_internal/v2/token"
+	copilotUserAgent   = "GitHubCopilotChat/0.32.4"
+	editorVersion      = "vscode/1.105.1"
+	editorPlugin       = "copilot-chat/0.32.4"
+	integrationID      = "vscode-chat"
 )
 
 // copilotTokenResponse is the response from the Copilot token exchange endpoint.
@@ -72,10 +76,12 @@ func refreshCopilotToken(githubToken string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("copilot token exchange: %w", err)
 	}
-	req.Header.Set("Authorization", "token "+githubToken)
-	req.Header.Set("User-Agent", "new-api/1.0")
-	req.Header.Set("Editor-Version", "vscode/1.99.0")
-	req.Header.Set("Editor-Plugin-Version", "copilot/1.0.0")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+githubToken)
+	req.Header.Set("User-Agent", copilotUserAgent)
+	req.Header.Set("Editor-Version", editorVersion)
+	req.Header.Set("Editor-Plugin-Version", editorPlugin)
+	req.Header.Set("Copilot-Integration-Id", integrationID)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -142,10 +148,12 @@ func GetQuota(_ context.Context, githubToken string) (*QuotaInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "token "+githubToken)
-	req.Header.Set("User-Agent", "new-api/1.0")
-	req.Header.Set("Editor-Version", "vscode/1.99.0")
-	req.Header.Set("Editor-Plugin-Version", "copilot/1.0.0")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+githubToken)
+	req.Header.Set("User-Agent", copilotUserAgent)
+	req.Header.Set("Editor-Version", editorVersion)
+	req.Header.Set("Editor-Plugin-Version", editorPlugin)
+	req.Header.Set("Copilot-Integration-Id", integrationID)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
