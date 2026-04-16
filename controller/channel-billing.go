@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -121,6 +122,21 @@ type OpenRouterCreditResponse struct {
 		TotalCredits float64 `json:"total_credits"`
 		TotalUsage   float64 `json:"total_usage"`
 	} `json:"data"`
+}
+
+type copilotAPIQuotaDetail struct {
+	Entitlement      float64 `json:"entitlement"`
+	Remaining        float64 `json:"remaining"`
+	PercentRemaining float64 `json:"percent_remaining"`
+	Unlimited        bool    `json:"unlimited"`
+}
+
+type copilotAPIUsageResponse struct {
+	CopilotPlan    string `json:"copilot_plan"`
+	QuotaResetDate string `json:"quota_reset_date"`
+	QuotaSnapshots struct {
+		PremiumInteractions copilotAPIQuotaDetail `json:"premium_interactions"`
+	} `json:"quota_snapshots"`
 }
 
 // GetAuthHeader get auth header
@@ -512,7 +528,7 @@ func updateChannelCopilotBalance(channel *model.Channel) (float64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	quota, err := copilotRelay.GetAggregatedQuota(ctx, channel.Key)
+	quota, err := getCopilotQuota(channel, ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get copilot quota: %w", err)
 	}
@@ -533,4 +549,56 @@ func updateChannelCopilotBalance(channel *model.Channel) (float64, error) {
 	}
 
 	return quota.RemainingRequests, nil
+}
+
+func getCopilotQuota(channel *model.Channel, ctx context.Context) (*copilotRelay.QuotaInfo, error) {
+	baseURL := strings.TrimSpace(channel.GetBaseURL())
+	if baseURL != "" && !strings.Contains(baseURL, "githubcopilot.com") {
+		return getCopilotQuotaFromProxy(channel)
+	}
+	return copilotRelay.GetAggregatedQuota(ctx, channel.Key)
+}
+
+func getCopilotQuotaFromProxy(channel *model.Channel) (*copilotRelay.QuotaInfo, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(channel.GetBaseURL()), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("empty copilot proxy base url")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/usage", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := service.NewProxyHttpClient(channel.GetSetting().Proxy)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("proxy usage request failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var usageResp copilotAPIUsageResponse
+	if err := common.DecodeJson(resp.Body, &usageResp); err != nil {
+		return nil, err
+	}
+
+	premium := usageResp.QuotaSnapshots.PremiumInteractions
+	quota := &copilotRelay.QuotaInfo{
+		TotalRequests:       premium.Entitlement,
+		UsedRequests:        premium.Entitlement - premium.Remaining,
+		RemainingRequests:   premium.Remaining,
+		RemainingPercentage: premium.PercentRemaining / 100,
+		ResetDate:           usageResp.QuotaResetDate,
+		IsUnlimited:         premium.Unlimited,
+	}
+	return quota, nil
 }

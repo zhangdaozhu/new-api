@@ -1,0 +1,42 @@
+services:
+  copilot-api-1:
+    image: registry.cn-hangzhou.aliyuncs.com/devblockchain/copilot-api:latest
+    container_name: copilot-api-1
+    restart: always
+    env_file:
+      - .env.server
+    ports:
+      - "4141:4141"
+    volumes:
+      - ./copilot-api-data/1:/root/.local/share/copilot-api
+    networks:
+      - new-api-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:4141/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  copilot-api-2:
+    image: registry.cn-hangzhou.aliyuncs.com/devblockchain/copilot-api:latest
+    container_name: copilot-api-2
+    restart: always
+    env_file:
+      - .env.server
+    ports:
+      - "4142:4141"
+    volumes:
+      - ./copilot-api-data/2:/root/.local/share/copilot-api
+    networks:
+      - new-api-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:4141/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+
+networks:
+  new-api-network:
+    name: new-api_new-api-network
+    external: true

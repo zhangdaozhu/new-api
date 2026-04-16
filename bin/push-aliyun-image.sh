@@ -6,7 +6,7 @@ NAMESPACE="${NAMESPACE:-devblockchain}"
 IMAGE_NAME="${IMAGE_NAME:-new-api}"
 TAG="${TAG:-latest}"
 PLATFORM="${PLATFORM:-linux/amd64}"
-DOCKERFILE="${DOCKERFILE:-Dockerfile}"
+DOCKERFILE="${DOCKERFILE:-Dockerfile.server}"
 CONTEXT_DIR="${CONTEXT_DIR:-.}"
 
 need_cmd() {

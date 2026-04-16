@@ -68,6 +68,21 @@ func clearChannelInfo(channel *model.Channel) {
 	}
 }
 
+func refreshCopilotUsageForChannels(channels []*model.Channel) {
+	for _, ch := range channels {
+		if ch == nil || ch.Type != constant.ChannelTypeCopilot {
+			continue
+		}
+		if _, err := updateChannelCopilotBalance(ch); err == nil {
+			if fresh, getErr := model.GetChannelById(ch.Id, false); getErr == nil && fresh != nil {
+				ch.Balance = fresh.Balance
+				ch.BalanceUpdatedTime = fresh.BalanceUpdatedTime
+				ch.Other = fresh.Other
+			}
+		}
+	}
+}
+
 func GetAllChannels(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	channelData := make([]*model.Channel, 0)
@@ -147,6 +162,7 @@ func GetAllChannels(c *gin.Context) {
 	for _, datum := range channelData {
 		clearChannelInfo(datum)
 	}
+	refreshCopilotUsageForChannels(channelData)
 
 	countQuery := model.DB.Model(&model.Channel{})
 	if statusFilter == common.ChannelStatusEnabled {
@@ -345,6 +361,7 @@ func SearchChannels(c *gin.Context) {
 	for _, datum := range pagedData {
 		clearChannelInfo(datum)
 	}
+	refreshCopilotUsageForChannels(pagedData)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
