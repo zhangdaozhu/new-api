@@ -5,6 +5,7 @@ services:
     restart: always
     env_file:
       - .env.server
+    command: ["--verbose"]
     ports:
       - "4141:4141"
     volumes:
@@ -23,6 +24,7 @@ services:
     restart: always
     env_file:
       - .env.server
+    command: ["--verbose"]
     ports:
       - "4142:4141"
     volumes:
